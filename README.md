@@ -2,7 +2,7 @@
 
 A lightweight static web app that converts Slack theme color strings into Mattermost custom theme JSON.
 
-Live app: https://mattrbdr.github.io/slacktomattermost/
+Live app: https://slacktomattermost.c.mrbdrs.fr/
 
 ## Features
 

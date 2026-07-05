@@ -1,0 +1,217 @@
+name: Deploy on Production
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "README.md"
+      - "LICENSE"
+      - "docs/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build and deploy to O2Switch
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    if: github.actor == 'mattrbdr'
+    env:
+      CPANEL_USER: ${{ secrets.CPANEL_USER }}
+      CPANEL_HOST: ${{ secrets.CPANEL_HOST }}
+      CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
+      SSH_KEY: ${{ secrets.SSH_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Load deployment config
+        id: config
+        run: |
+          set -euo pipefail
+          set -a
+          . ./.github/deploy/o2switch-production.env
+          set +a
+
+          {
+            echo "ALLOWED_ACTOR=${ALLOWED_ACTOR}"
+            echo "DEPLOY_BRANCH=${DEPLOY_BRANCH}"
+            echo "NODE_VERSION=${NODE_VERSION}"
+            echo "INSTALL_COMMAND=${INSTALL_COMMAND}"
+            echo "CHECK_COMMANDS=${CHECK_COMMANDS}"
+            echo "BUILD_COMMAND=${BUILD_COMMAND}"
+            echo "BUILD_OUTPUT=${BUILD_OUTPUT}"
+            echo "REMOTE_PATH=${REMOTE_PATH}"
+            echo "BACKUP_PATH=${BACKUP_PATH}"
+            echo "KEEP_BACKUPS=${KEEP_BACKUPS}"
+          } >> "$GITHUB_ENV"
+
+          echo "node_version=${NODE_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Guard production deployment
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_ACTOR}" != "${ALLOWED_ACTOR}" ]; then
+            echo "Only ${ALLOWED_ACTOR} can deploy production. Current actor: ${GITHUB_ACTOR}"
+            exit 1
+          fi
+
+          if [ "${GITHUB_REF_NAME}" != "${DEPLOY_BRANCH}" ]; then
+            echo "Production deploys are restricted to ${DEPLOY_BRANCH}. Current branch: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+          for secret_name in CPANEL_USER CPANEL_HOST CPANEL_API_TOKEN SSH_KEY; do
+            if [ -z "${!secret_name:-}" ]; then
+              echo "Missing GitHub secret: ${secret_name}"
+              exit 1
+            fi
+          done
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.config.outputs.node_version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: bash -lc "$INSTALL_COMMAND"
+
+      - name: Check project
+        run: bash -lc "$CHECK_COMMANDS"
+
+      - name: Generate static site
+        run: bash -lc "$BUILD_COMMAND"
+
+      - name: Validate build output
+        run: |
+          set -euo pipefail
+          if [ ! -d "${BUILD_OUTPUT}" ]; then
+            echo "Build output not found: ${BUILD_OUTPUT}"
+            exit 1
+          fi
+
+      - name: Prepare deployment artifact
+        run: |
+          set -euo pipefail
+          rm -rf production
+          mkdir -p production/site
+          cp -a "${BUILD_OUTPUT}/." production/site/
+
+      - name: Get runner's public IP
+        id: ip
+        uses: haythem/public-ip@v1.3
+
+      - name: Removing all whitelisted IP
+        run: |
+          curl -sm 45 -H'Authorization: cpanel ${{ secrets.CPANEL_USER }}:${{ secrets.CPANEL_API_TOKEN }}' \
+          'https://${{ secrets.CPANEL_HOST }}:2083/execute/SshWhitelist/remove_all'
+
+      - name: Whitelisting the runner IP
+        run: |
+          curl -sm 45 -H'Authorization: cpanel ${{ secrets.CPANEL_USER }}:${{ secrets.CPANEL_API_TOKEN }}' \
+          'https://${{ secrets.CPANEL_HOST }}:2083/execute/SshWhitelist/add?address=${{ steps.ip.outputs.ipv4 }}&port=22'
+
+      - name: Ensure runner IP is whitelisted
+        run: |
+          curl -sm 45 -H'Authorization: cpanel ${{ secrets.CPANEL_USER }}:${{ secrets.CPANEL_API_TOKEN }}' \
+          'https://${{ secrets.CPANEL_HOST }}:2083/execute/SshWhitelist/list' | grep ${{ steps.ip.outputs.ipv4 }}
+
+      - name: Installing the SSH Key
+        run: |
+          eval $(ssh-agent -s)
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf "%s\n" "${{ secrets.SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 0400 ~/.ssh/id_rsa
+          ssh-add ~/.ssh/id_rsa
+
+      - name: Backup current production
+        id: backup
+        run: |
+          set -euo pipefail
+          BACKUP_NAME="production-backup-$(date +%Y%m%d-%H%M%S)"
+          echo "backup_name=${BACKUP_NAME}" >> "$GITHUB_OUTPUT"
+
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -vv \
+            ${{ secrets.CPANEL_USER }}@${{ secrets.CPANEL_HOST }} << EOF
+            set -euo pipefail
+            cd ~
+            mkdir -p "${BACKUP_PATH}"
+
+            if [ -d "${REMOTE_PATH}" ]; then
+              echo "Backing up current production files"
+              cp -r "${REMOTE_PATH}" "${BACKUP_PATH}/${BACKUP_NAME}"
+              echo "Backup created: ${BACKUP_PATH}/${BACKUP_NAME}"
+            else
+              echo "Creating remote production path"
+              mkdir -p "${REMOTE_PATH}"
+            fi
+          EOF
+
+      - name: Deploy static files with rsync
+        run: |
+          set -euo pipefail
+          rsync --timeout=60 -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa" \
+            --exclude=".git" --exclude="tmp" --exclude="node_modules" --exclude="**/node_modules" \
+            -av --delete production/site/ \
+            ${{ secrets.CPANEL_USER }}@${{ secrets.CPANEL_HOST }}:/home/${{ secrets.CPANEL_USER }}/${REMOTE_PATH}/
+
+      - name: Verify remote deployment and cleanup backups
+        id: remote
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa \
+            ${{ secrets.CPANEL_USER }}@${{ secrets.CPANEL_HOST }} << EOF
+            set -euo pipefail
+            cd ~
+
+            test -f "${REMOTE_PATH}/index.html"
+            echo "Remote index.html found"
+
+            if [ -d "${BACKUP_PATH}" ]; then
+              cd "${BACKUP_PATH}"
+              ls -t | tail -n +"$((KEEP_BACKUPS + 1))" | xargs -r rm -rf
+              echo "Old backups cleaned"
+            fi
+          EOF
+
+      - name: Rollback production on failure
+        id: rollback
+        if: failure() && steps.backup.outputs.backup_name != ''
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa \
+            ${{ secrets.CPANEL_USER }}@${{ secrets.CPANEL_HOST }} << EOF
+            set -euo pipefail
+            cd ~
+
+            BACKUP_NAME="${{ steps.backup.outputs.backup_name }}"
+            if [ ! -d "${BACKUP_PATH}/${BACKUP_NAME}" ]; then
+              echo "Backup not found: ${BACKUP_PATH}/${BACKUP_NAME}"
+              exit 1
+            fi
+
+            rm -rf "${REMOTE_PATH}"
+            cp -r "${BACKUP_PATH}/${BACKUP_NAME}" "${REMOTE_PATH}"
+            echo "Rollback completed from ${BACKUP_PATH}/${BACKUP_NAME}"
+          EOF
+
+      - name: Remove runner IP from whitelist
+        if: always()
+        run: |
+          curl -sm 45 -H'Authorization: cpanel ${{ secrets.CPANEL_USER }}:${{ secrets.CPANEL_API_TOKEN }}' \
+          'https://${{ secrets.CPANEL_HOST }}:2083/execute/SshWhitelist/remove?address=${{ steps.ip.outputs.ipv4 }}&port=22' || true
+
+      - name: Cleaning SSH keys
+        if: always()
+        run: rm -fr ~/.ssh
