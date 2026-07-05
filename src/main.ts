@@ -92,6 +92,10 @@ function render() {
 
       <section class="workspace">
         <aside class="panel controls">
+          <div class="panel-title">
+            <span>Input</span>
+            <small>Slack palette</small>
+          </div>
           <label class="field">
             <span>Preset</span>
             <select id="preset">
@@ -135,7 +139,7 @@ function render() {
 
         <section class="panel output">
           <div class="output-header">
-            <div>
+            <div class="panel-title">
               <span>Mattermost JSON</span>
               <small>Paste into Mattermost custom theme</small>
             </div>
