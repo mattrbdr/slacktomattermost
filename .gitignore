@@ -6,3 +6,9 @@ dist/
 npm-debug.log*
 vite.config.ts.timestamp-*
 vite.config.js.timestamp-*
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
