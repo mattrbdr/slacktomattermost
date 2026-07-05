@@ -82,7 +82,7 @@ function render() {
       <header class="masthead">
         <div>
           <p class="eyebrow">Slack to Mattermost</p>
-          <h1>Theme converter</h1>
+          <h1>Theme Converter</h1>
         </div>
         <div class="status" data-tone="${state.error ? "warn" : "ok"}">
           <span>${escapeHtml(state.status)}</span>
@@ -93,7 +93,7 @@ function render() {
       <section class="workspace">
         <aside class="panel controls">
           <label class="field">
-            <span>Theme from slackthemes.net</span>
+            <span>Preset</span>
             <select id="preset">
               ${state.presets
                 .map(
@@ -105,7 +105,7 @@ function render() {
           </label>
 
           <label class="field">
-            <span>Slack theme string</span>
+            <span>Slack colors</span>
             <textarea id="input" spellcheck="false">${escapeHtml(state.input)}</textarea>
           </label>
 
@@ -123,8 +123,8 @@ function render() {
           </div>
 
           <div class="actions">
-            <button id="reload" type="button" class="secondary">Reload themes</button>
-            <button id="sample" type="button" class="secondary">Reset sample</button>
+            <button id="reload" type="button" class="secondary">Reload</button>
+            <button id="sample" type="button" class="secondary">Reset</button>
           </div>
           ${state.error ? `<p class="notice">${escapeHtml(state.error)}</p>` : ""}
         </aside>
@@ -137,7 +137,7 @@ function render() {
           <div class="output-header">
             <div>
               <span>Mattermost JSON</span>
-              <small>Paste into Display > Theme > Custom Theme</small>
+              <small>Paste into Mattermost custom theme</small>
             </div>
             <label class="toggle">
               <input id="compact" type="checkbox" ${state.compactOutput ? "checked" : ""} />
@@ -146,7 +146,7 @@ function render() {
           </div>
           <textarea id="output" spellcheck="false" readonly>${escapeHtml(output)}</textarea>
           <div class="actions">
-            <button id="copy" type="button">Copy JSON</button>
+            <button id="copy" type="button">Copy</button>
             <button id="download" type="button" class="secondary">Download</button>
           </div>
         </section>
